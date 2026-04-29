@@ -1,7 +1,7 @@
 import { useState, useEffect, useMemo } from 'react';
 import { collection, onSnapshot, query, orderBy, limit } from 'firebase/firestore';
 import { db } from '../lib/firebase';
-import { Receipt, Calendar, Filter, Search as SearchIcon } from 'lucide-react';
+import { Receipt, Calendar, Filter, Search as SearchIcon, Printer } from 'lucide-react';
 import { cn } from '../lib/utils';
 
 interface TransactionItem {
@@ -45,6 +45,7 @@ export default function AdminTransactions() {
   }, []);
 
   const filteredTransactions = useMemo(() => {
+    // ... (rest of filtering logic)
     return transactions.filter(tx => {
       const searchLower = search.toLowerCase();
       const matchesSearch = (tx.staffName || '').toLowerCase().includes(searchLower) || 
@@ -75,6 +76,106 @@ export default function AdminTransactions() {
       return true;
     });
   }, [transactions, paymentFilter, startDate, endDate, search]);
+
+  const handlePrint = (tx: Transaction) => {
+    // Create a hidden iframe for printing to avoid popup blockers and work better in iframes
+    const iframe = document.createElement('iframe');
+    iframe.style.position = 'fixed';
+    iframe.style.right = '0';
+    iframe.style.bottom = '0';
+    iframe.style.width = '0';
+    iframe.style.height = '0';
+    iframe.style.border = '0';
+    document.body.appendChild(iframe);
+
+    const doc = iframe.contentWindow?.document;
+    if (!doc) return;
+
+    const dateStr = tx.createdAt?.toDate ? tx.createdAt.toDate().toLocaleString() : new Date().toLocaleString();
+
+    doc.write('<html><head><title>Receipt</title><style>');
+    doc.write(`
+      @page { size: 58mm auto; margin: 0; }
+      body { 
+        font-family: "Courier New", Courier, monospace; 
+        width: 58mm; 
+        padding: 2mm; 
+        font-size: 16px; 
+        line-height: 1.1; 
+        margin: 0;
+        color: #000;
+        background: #fff;
+        font-weight: 700;
+      }
+      .center { text-align: center; }
+      .bold { font-weight: 900; }
+      .divider { border-top: 2px dashed #000; margin: 8px 0; width: 100%; }
+      table { width: 100%; border-collapse: collapse; margin: 8px 0; }
+      th { text-align: left; border-bottom: 2px solid #000; font-size: 14px; padding-bottom: 4px; font-weight: 900; }
+      td { padding: 6px 0; vertical-align: top; font-weight: 700; }
+      .price-col { text-align: right; }
+      .qty-col { text-align: center; width: 50px; }
+      .total-row { border-top: 2px solid #000; padding-top: 8px; margin-top: 8px; font-weight: 900; font-size: 20px; display: flex; justify-content: space-between; }
+      .footer { text-align: center; margin-top: 20px; font-size: 12px; font-weight: 900; line-height: 1.4; }
+      * { box-sizing: border-box; }
+    `);
+    doc.write('</style></head><body>');
+    doc.write(`
+      <div class="center">
+        <div style="font-size: 24px; font-weight: 900;">MAZAYA STORE</div>
+        <div style="font-size: 12px; margin-top: 4px; font-weight: 900;">PREMIUM QUALITY ITEMS</div>
+        <div class="divider"></div>
+      </div>
+      <div style="font-size: 13px; margin: 12px 0;">
+        <div style="display: flex; justify-content: space-between;"><span>Date:</span> <span>${dateStr}</span></div>
+        <div style="display: flex; justify-content: space-between;"><span>Tx ID:</span> <span style="overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 120px;">${tx.id}</span></div>
+        <div style="display: flex; justify-content: space-between;"><span>Staff:</span> <span>${tx.staffName || tx.staffId}</span></div>
+        <div style="display: flex; justify-content: space-between;"><span>Payment:</span> <span class="bold">${tx.paymentMethod}</span></div>
+      </div>
+      <div class="divider"></div>
+      <table>
+        <thead>
+          <tr>
+            <th>Item</th>
+            <th class="qty-col">Qty</th>
+            <th class="price-col">Price</th>
+          </tr>
+        </thead>
+        <tbody>
+          ${tx.items.map(item => `
+            <tr>
+              <td>${item.name}</td>
+              <td class="qty-col">x${item.quantity}</td>
+              <td class="price-col">₦${item.sellingPrice.toFixed(2)}</td>
+            </tr>
+          `).join('')}
+        </tbody>
+      </table>
+      <div class="total-row">
+        <span>TOTAL</span>
+        <span>₦${tx.totalAmount.toFixed(2)}</span>
+      </div>
+      <div class="footer">
+        THANK YOU FOR YOUR PATRONAGE!
+      </div>
+    `);
+    doc.write('</body></html>');
+    doc.close();
+
+    // Small delay to ensure styles are applied
+    setTimeout(() => {
+      if (iframe.contentWindow) {
+        iframe.contentWindow.focus();
+        iframe.contentWindow.print();
+      }
+      // Keep iframe a bit longer to ensure print dialog finishes
+      setTimeout(() => {
+        if (document.body.contains(iframe)) {
+          document.body.removeChild(iframe);
+        }
+      }, 2000);
+    }, 800);
+  };
 
   return (
     <div className="p-8 max-w-7xl mx-auto font-sans">
@@ -203,6 +304,14 @@ export default function AdminTransactions() {
                 <div>
                    <p className="text-xs uppercase text-gray-400 font-semibold tracking-wider mb-1">Staff Member</p>
                    <p className="font-medium text-gray-900">{tx.staffName || tx.staffId}</p>
+                </div>
+                <div className="pt-2">
+                   <button 
+                     onClick={() => handlePrint(tx)}
+                     className="w-full flex items-center justify-center gap-2 py-2.5 bg-white border border-slate-200 rounded-xl text-sm font-bold text-slate-700 hover:bg-slate-50 transition-all shadow-sm"
+                   >
+                     <Printer className="w-4 h-4" /> Print Receipt
+                   </button>
                 </div>
               </div>
 

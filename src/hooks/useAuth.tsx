@@ -88,8 +88,13 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     const provider = new GoogleAuthProvider();
     try {
       await signInWithPopup(auth, provider);
-    } catch (error) {
+    } catch (error: any) {
       console.error("Sign in failed", error);
+      if (error.code === 'auth/unauthorized-domain') {
+        alert("This domain is not authorized in Firebase. Please add " + window.location.hostname + " to your Authorized Domains in the Firebase Console.");
+      } else {
+        alert("Sign in failed: " + error.message);
+      }
     }
   };
 

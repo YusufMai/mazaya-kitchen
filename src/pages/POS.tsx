@@ -1,8 +1,8 @@
-import { useState, useEffect, useMemo } from 'react';
+import { useState, useEffect, useMemo, useRef } from 'react';
 import { collection, onSnapshot, query, addDoc, serverTimestamp, writeBatch, doc, getDoc, updateDoc, orderBy } from 'firebase/firestore';
 import { db } from '../lib/firebase';
 import { useAuth } from '../hooks/useAuth';
-import { ShoppingCart, Plus, Minus, X, Check, Search, User, CreditCard } from 'lucide-react';
+import { ShoppingCart, Plus, Minus, X, Check, Search, User, CreditCard, Printer, Receipt as ReceiptIcon } from 'lucide-react';
 import { cn } from '../lib/utils';
 
 interface Product {
@@ -34,6 +34,18 @@ export default function POS() {
   const [isProcessing, setIsProcessing] = useState(false);
   const [successMsg, setSuccessMsg] = useState(false);
   const [search, setSearch] = useState('');
+  const [showReceipt, setShowReceipt] = useState(false);
+  const [lastSale, setLastSale] = useState<{
+    id: string;
+    items: CartItem[];
+    total: number;
+    paymentMethod: string;
+    customerName?: string;
+    date: Date;
+    staffName: string;
+  } | null>(null);
+
+  const receiptRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
     const q = query(collection(db, 'products'));
@@ -116,6 +128,70 @@ export default function POS() {
 
   const total = cart.reduce((sum, item) => sum + (item.sellingPrice * item.quantity), 0);
 
+  const handlePrint = () => {
+    const printContent = receiptRef.current;
+    if (!printContent) return;
+
+    // Create a hidden iframe for printing to avoid popup blockers and work better in iframes
+    const iframe = document.createElement('iframe');
+    iframe.style.position = 'fixed';
+    iframe.style.right = '0';
+    iframe.style.bottom = '0';
+    iframe.style.width = '0';
+    iframe.style.height = '0';
+    iframe.style.border = '0';
+    document.body.appendChild(iframe);
+
+    const doc = iframe.contentWindow?.document;
+    if (!doc) return;
+
+    doc.write('<html><head><title>Receipt</title><style>');
+    doc.write(`
+      @page { size: 58mm auto; margin: 0; }
+      body { 
+        font-family: "Courier New", Courier, monospace; 
+        width: 58mm; 
+        padding: 2mm; 
+        font-size: 16px; 
+        line-height: 1.1; 
+        margin: 0;
+        color: #000;
+        background: #fff;
+        font-weight: 700;
+      }
+      .center { text-align: center; }
+      .bold { font-weight: 900; }
+      .divider { border-top: 2px dashed #000; margin: 8px 0; width: 100%; }
+      table { width: 100%; border-collapse: collapse; margin: 8px 0; }
+      th { text-align: left; border-bottom: 2px solid #000; font-size: 14px; padding-bottom: 4px; font-weight: 900; }
+      td { padding: 6px 0; vertical-align: top; font-weight: 700; }
+      .price-col { text-align: right; }
+      .qty-col { text-align: center; width: 50px; }
+      .total-row { border-top: 2px solid #000; padding-top: 8px; margin-top: 8px; font-weight: 900; font-size: 20px; display: flex; justify-content: space-between; }
+      .footer { text-align: center; margin-top: 20px; font-size: 12px; font-weight: 900; line-height: 1.4; }
+      * { box-sizing: border-box; }
+      h2 { margin: 0; font-size: 24px; font-weight: 900; }
+    `);
+    doc.write('</style></head><body>');
+    doc.write(printContent.innerHTML);
+    doc.write('</body></html>');
+    doc.close();
+
+    // Small delay to ensure styles are applied
+    setTimeout(() => {
+      if (iframe.contentWindow) {
+        iframe.contentWindow.focus();
+        iframe.contentWindow.print();
+      }
+      // Keep iframe a bit longer to ensure print dialog finishes
+      setTimeout(() => {
+        if (document.body.contains(iframe)) {
+          document.body.removeChild(iframe);
+        }
+      }, 2000);
+    }, 800);
+  };
+
   const processSale = async () => {
     if (cart.length === 0 || !user || isProcessing) return;
     if (paymentMethod === 'Debt' && !selectedCustomerId) {
@@ -129,7 +205,7 @@ export default function POS() {
       
       // 1. Transaction Doc
       const txRef = doc(collection(db, 'transactions'));
-      batch.set(txRef, {
+      const txData = {
         staffId: user.uid,
         staffName: user.name || user.email,
         paymentMethod,
@@ -143,9 +219,11 @@ export default function POS() {
           subtotal: item.sellingPrice * item.quantity
         })),
         createdAt: serverTimestamp()
-      });
+      };
+      batch.set(txRef, txData);
 
       // 2. Adjust Stock
+      // ... (rest of stock logic stays the same) ...
       for (const item of cart) {
         const product = products.find(p => p.id === item.id);
         if (!product || product.stock < item.quantity) {
@@ -171,10 +249,23 @@ export default function POS() {
 
       await batch.commit();
       
+      // Success - State for receipt
+      const customer = customers.find(c => c.id === selectedCustomerId);
+      setLastSale({
+        id: txRef.id,
+        items: [...cart],
+        total: total,
+        paymentMethod: paymentMethod,
+        customerName: customer?.name,
+        date: new Date(),
+        staffName: user.name || user.email
+      });
+
       setCart([]);
       setSelectedCustomerId('');
       setPaymentMethod('Cash');
       setSuccessMsg(true);
+      setShowReceipt(true);
       setTimeout(() => setSuccessMsg(false), 3000);
       
     } catch (error: any) {
@@ -361,6 +452,91 @@ export default function POS() {
           )}
         </div>
       </aside>
+
+      {/* Receipt Modal */}
+      {showReceipt && lastSale && (
+        <div className="fixed inset-0 bg-slate-900/60 backdrop-blur-sm flex items-center justify-center p-4 z-[100]">
+          <div className="bg-white rounded-3xl shadow-2xl w-full max-w-sm overflow-hidden animate-in fade-in zoom-in duration-200">
+            <div className="px-6 py-4 border-b border-slate-100 flex justify-between items-center bg-slate-50">
+              <h3 className="font-black text-lg text-slate-900 flex items-center gap-2">
+                <ReceiptIcon className="w-5 h-5 text-indigo-600" /> Receipt
+              </h3>
+              <button 
+                onClick={() => setShowReceipt(false)}
+                className="p-1.5 text-slate-400 hover:text-slate-900 hover:bg-white rounded-lg transition-colors border border-transparent hover:border-slate-200"
+              >
+                <X className="w-5 h-5" />
+              </button>
+            </div>
+            
+            <div className="p-6">
+              {/* Printable Area */}
+              <div ref={receiptRef} className="bg-slate-50 p-4 rounded-xl border-2 border-dashed border-slate-200 font-mono text-base font-bold text-slate-800">
+                <div className="center">
+                  <div style={{ fontSize: '22px', fontWeight: '900' }}>MAZAYA STORE</div>
+                  <div style={{ fontSize: '12px', marginTop: '2px', fontWeight: '800' }}>PREMIUM QUALITY ITEMS</div>
+                  <div className="divider"></div>
+                </div>
+
+                <div style={{ fontSize: '14px', margin: '12px 0' }}>
+                  <div style={{ display: 'flex', justifyContent: 'space-between' }}><span>Date:</span> <span>{lastSale.date.toLocaleString()}</span></div>
+                  <div style={{ display: 'flex', justifyContent: 'space-between' }}><span>Tx ID:</span> <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', maxWidth: '120px' }}>{lastSale.id}</span></div>
+                  <div style={{ display: 'flex', justifyContent: 'space-between' }}><span>Staff:</span> <span>{lastSale.staffName}</span></div>
+                  {lastSale.customerName && (
+                    <div style={{ display: 'flex', justifyContent: 'space-between' }}><span>Customer:</span> <span>{lastSale.customerName}</span></div>
+                  )}
+                  <div style={{ display: 'flex', justifyContent: 'space-between' }}><span>Payment:</span> <span className="bold">{lastSale.paymentMethod}</span></div>
+                </div>
+
+                <div className="divider"></div>
+                
+                <table>
+                  <thead>
+                    <tr>
+                      <th>Item</th>
+                      <th className="qty-col">Qty</th>
+                      <th className="price-col">Price</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {lastSale.items.map((item, idx) => (
+                      <tr key={idx}>
+                        <td>{item.name}</td>
+                        <td className="qty-col">x{item.quantity}</td>
+                        <td className="price-col">₦{item.sellingPrice.toFixed(2)}</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+
+                <div className="total-row" style={{ fontSize: '18px' }}>
+                  <span>TOTAL</span>
+                  <span>₦{lastSale.total.toFixed(2)}</span>
+                </div>
+
+                <div className="footer" style={{ fontSize: '12px' }}>
+                  THANK YOU FOR YOUR PATRONAGE!
+                </div>
+              </div>
+
+              <div className="mt-6 flex gap-3">
+                <button 
+                  onClick={() => setShowReceipt(false)}
+                  className="flex-1 py-3 px-4 bg-slate-100 text-slate-700 rounded-xl font-bold hover:bg-slate-200 transition-colors"
+                >
+                  Close
+                </button>
+                <button 
+                  onClick={handlePrint}
+                  className="flex-1 py-3 px-4 bg-indigo-600 text-white rounded-xl font-bold hover:bg-indigo-700 transition-colors shadow-lg shadow-indigo-100 flex items-center justify-center gap-2"
+                >
+                  <Printer className="w-5 h-5" /> Print
+                </button>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }
