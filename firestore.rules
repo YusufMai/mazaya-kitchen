@@ -1,0 +1,193 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+    match /{document=**} { allow read, write: if false; }
+
+    function isSignedIn() { return request.auth != null && request.auth.token.email != null; }
+    function isValidId(id) { return id is string && id.size() > 0 && id.size() <= 128 && id.matches('^[a-zA-Z0-9_\\-.@]+$'); }
+    function incoming() { return request.resource.data; }
+    function existing() { return resource.data; }
+    
+    // Auth context and roles based on Email ID
+    function getRole() {
+      let email = request.auth.token.email.lower();
+      return exists(/databases/$(database)/documents/users/$(email)) ?
+        get(/databases/$(database)/documents/users/$(email)).data.role : "staff";
+    }
+    
+    function isSuperAdmin() {
+      return isSignedIn() && (
+        request.auth.token.email.lower() == "dev.yusufmai@gmail.com" || 
+        getRole() == "super_admin"
+      );
+    }
+
+    function isAdmin() {
+      return isSignedIn() && (
+        isSuperAdmin() || getRole() == "admin"
+      );
+    }
+    
+    function isStaff() {
+      return isSignedIn() && (isAdmin() || getRole() == "staff");
+    }
+
+    function isValidUser(data) {
+      return data.keys().hasAll(['email', 'role']) &&
+             data.email is string && data.email.size() > 0 && data.email.size() <= 100 &&
+             data.role is string && (data.role == 'super_admin' || data.role == 'admin' || data.role == 'staff') &&
+             (data.name == null || (data.name is string && data.name.size() <= 100));
+    }
+
+    // `userId` here is actually the email address string
+    match /users/{userId} {
+      allow get: if isSignedIn() && (request.auth.token.email.lower() == userId || isAdmin());
+      allow list: if isAdmin();
+      
+      // Admins creating or users self-registering
+      allow create: if isSignedIn() && isValidUser(incoming()) && (
+        (request.auth.token.email.lower() == userId && (incoming().role == 'staff' || (request.auth.token.email.lower() == "dev.yusufmai@gmail.com" && incoming().role == 'super_admin'))) ||
+        isAdmin()
+      );
+      
+      // Super admins and admins updating records
+      allow update: if isSignedIn() && isValidUser(incoming()) && incoming().email == existing().email && (
+        isSuperAdmin() || 
+        (isAdmin() && existing().role != 'super_admin' && incoming().role != 'super_admin') ||
+        (request.auth.token.email.lower() == userId && incoming().role == existing().role) // Users can self-update names but not roles
+      );
+
+      allow delete: if isSuperAdmin() && userId != "dev.yusufmai@gmail.com";
+    }
+
+    function isValidProduct(data) {
+      return data.keys().hasAll(['name', 'category', 'costPrice', 'sellingPrice', 'stock', 'createdAt', 'updatedAt']) &&
+             data.name is string && data.name.size() > 0 && data.name.size() <= 100 &&
+             data.category is string && data.category.size() <= 50 &&
+             data.costPrice is number && data.costPrice >= 0 &&
+             data.sellingPrice is number && data.sellingPrice >= 0 &&
+             data.stock is number && data.stock >= 0 &&
+             (data.imageUrl == null || (data.imageUrl is string && data.imageUrl.size() <= 5000000)) &&
+             data.createdAt is timestamp &&
+             data.updatedAt is timestamp;
+    }
+
+    match /products/{productId} {
+      allow get: if isStaff() && isValidId(productId);
+      allow list: if isStaff();
+      
+      allow create: if isAdmin() && isValidId(productId) && isValidProduct(incoming()) &&
+                    incoming().createdAt == request.time && incoming().updatedAt == request.time;
+                    
+      // Staff can update product ONLY to reduce stock.
+      allow update: if isValidId(productId) && isStaff() && isValidProduct(incoming()) &&
+                    incoming().updatedAt == request.time &&
+                    incoming().createdAt == existing().createdAt && (
+        isAdmin() ||
+        (
+          incoming().diff(existing()).affectedKeys().hasOnly(['stock', 'updatedAt']) &&
+          incoming().stock < existing().stock &&
+          incoming().stock >= 0
+        )
+      );
+      
+      allow delete: if isAdmin() && isValidId(productId);
+    }
+
+    function isValidTransactionItem(item) {
+       return item.keys().hasAll(['productId', 'name', 'quantity', 'sellingPrice', 'subtotal']) &&
+              item.productId is string && item.productId.size() <= 128 &&
+              item.name is string && item.name.size() <= 100 &&
+              item.quantity is number && item.quantity > 0 &&
+              item.sellingPrice is number && item.sellingPrice >= 0 &&
+              item.subtotal is number && item.subtotal >= 0;
+    }
+    
+    function areTransactionItemsValid(itemsList) {
+       return itemsList is list && itemsList.size() > 0 && itemsList.size() <= 50 &&
+              isValidTransactionItem(itemsList[0]); // Checking at least the first item securely
+    }
+
+    function isValidTransaction(data) {
+      return data.keys().hasAll(['items', 'totalAmount', 'paymentMethod', 'staffId', 'createdAt']) &&
+             areTransactionItemsValid(data.items) &&
+             data.totalAmount is number && data.totalAmount >= 0 &&
+             data.paymentMethod is string && (data.paymentMethod in ['Cash', 'Transfer', 'Debt']) &&
+             data.staffId is string && data.staffId == request.auth.uid &&
+             (data.staffName == null || (data.staffName is string && data.staffName.size() <= 100)) &&
+             (data.customerId == null || (data.customerId is string && data.customerId.size() <= 128)) &&
+             data.createdAt is timestamp;
+    }
+
+    match /transactions/{transactionId} {
+      allow get: if isSignedIn() && isValidId(transactionId) && (isAdmin() || resource.data.staffId == request.auth.uid);
+      allow list: if isSignedIn() && (isAdmin() || resource.data.staffId == request.auth.uid);
+      
+      allow create: if isStaff() && isValidId(transactionId) && isValidTransaction(incoming()) &&
+                    incoming().createdAt == request.time &&
+                    incoming().staffId == request.auth.uid;
+                    
+      allow update, delete: if false;
+    }
+
+    function isValidCustomer(data) {
+      return data.keys().hasAll(['name', 'createdAt']) &&
+             data.name is string && data.name.size() > 0 &&
+             (data.phone == null || data.phone is string) &&
+             (data.totalDebt == null || data.totalDebt is number) &&
+             data.createdAt is timestamp;
+    }
+
+    match /customers/{customerId} {
+      allow read: if isStaff();
+      allow create: if isStaff() && isValidCustomer(incoming()) && incoming().createdAt == request.time;
+      allow update: if isStaff() && isValidCustomer(incoming()) && 
+                    (isAdmin() || incoming().diff(existing()).affectedKeys().hasOnly(['totalDebt', 'name', 'phone']));
+      allow delete: if isAdmin();
+    }
+
+    function isValidDebtPayment(data) {
+      return data.keys().hasAll(['customerId', 'amount', 'paymentMethod', 'staffId', 'createdAt']) &&
+             data.customerId is string && data.amount is number && data.amount > 0 &&
+             data.paymentMethod in ['Cash', 'Transfer'] &&
+             data.staffId == request.auth.uid &&
+             data.createdAt is timestamp;
+    }
+
+    match /debt_payments/{paymentId} {
+      allow read: if isStaff();
+      allow create: if isStaff() && isValidDebtPayment(incoming()) && incoming().createdAt == request.time;
+      allow update, delete: if false;
+    }
+
+    function isValidAdasheGroup(data) {
+      return data.keys().hasAll(['name', 'contributionAmount', 'frequency', 'status', 'createdAt']) &&
+             data.name is string && data.contributionAmount is number && 
+             data.frequency in ['Daily', 'Weekly', 'Monthly'] &&
+             data.status in ['Active', 'Completed'] &&
+             data.createdAt is timestamp;
+    }
+
+    match /adashe_groups/{groupId} {
+      allow read: if isStaff();
+      allow create: if isAdmin() && isValidAdasheGroup(incoming()) && incoming().createdAt == request.time;
+      allow update: if isAdmin() && isValidAdasheGroup(incoming()) && 
+                    incoming().createdAt == existing().createdAt;
+      allow delete: if isAdmin();
+    }
+
+    function isValidAdasheContribution(data) {
+      return data.keys().hasAll(['groupId', 'memberId', 'amount', 'staffId', 'createdAt']) &&
+             data.groupId is string && data.memberId is string && data.amount is number &&
+             data.staffId == request.auth.uid &&
+             data.createdAt is timestamp;
+    }
+
+    match /adashe_contributions/{contributionId} {
+      allow read: if isStaff();
+      allow create: if isStaff() && isValidAdasheContribution(incoming()) && incoming().createdAt == request.time;
+      allow update, delete: if false;
+    }
+  }
+}
+

@@ -1,0 +1,129 @@
+{
+  "entities": {
+    "User": {
+      "title": "User",
+      "description": "User profile with role",
+      "type": "object",
+      "properties": {
+        "email": { "type": "string" },
+        "name": { "type": "string" },
+        "role": { "type": "string", "enum": ["admin", "staff"] },
+        "createdAt": { "type": "string", "description": "Timestamp" }
+      },
+      "required": ["email", "role", "createdAt"]
+    },
+    "Product": {
+      "title": "Product",
+      "description": "Inventory item",
+      "type": "object",
+      "properties": {
+        "name": { "type": "string" },
+        "category": { "type": "string" },
+        "costPrice": { "type": "number" },
+        "sellingPrice": { "type": "number" },
+        "stock": { "type": "number" },
+        "imageUrl": { "type": "string" },
+        "createdAt": { "type": "string", "description": "Timestamp" },
+        "updatedAt": { "type": "string", "description": "Timestamp" }
+      },
+      "required": ["name", "category", "costPrice", "sellingPrice", "stock", "createdAt", "updatedAt"]
+    },
+    "Transaction": {
+      "title": "Transaction",
+      "description": "Sales record",
+      "type": "object",
+      "properties": {
+        "items": { "type": "array" },
+        "totalAmount": { "type": "number" },
+        "paymentMethod": { "type": "string", "enum": ["Cash", "Transfer", "Debt"] },
+        "customerId": { "type": "string", "description": "Optional customer ID for debt sales" },
+        "staffId": { "type": "string" },
+        "staffName": { "type": "string" },
+        "createdAt": { "type": "string", "description": "Timestamp" }
+      },
+      "required": ["items", "totalAmount", "paymentMethod", "staffId", "createdAt"]
+    },
+    "Customer": {
+      "title": "Customer",
+      "description": "Customer with debt balance",
+      "type": "object",
+      "properties": {
+        "name": { "type": "string" },
+        "phone": { "type": "string" },
+        "totalDebt": { "type": "number", "default": 0 },
+        "createdAt": { "type": "string", "description": "Timestamp" }
+      },
+      "required": ["name", "createdAt"]
+    },
+    "DebtPayment": {
+      "title": "DebtPayment",
+      "description": "Customer debt repayment record",
+      "type": "object",
+      "properties": {
+        "customerId": { "type": "string" },
+        "amount": { "type": "number" },
+        "paymentMethod": { "type": "string", "enum": ["Cash", "Transfer"] },
+        "staffId": { "type": "string" },
+        "createdAt": { "type": "string", "description": "Timestamp" }
+      },
+      "required": ["customerId", "amount", "paymentMethod", "staffId", "createdAt"]
+    },
+    "AdasheGroup": {
+      "title": "Adashe Group",
+      "description": "A group contribution plan",
+      "type": "object",
+      "properties": {
+        "name": { "type": "string" },
+        "contributionAmount": { "type": "number" },
+        "frequency": { "type": "string", "enum": ["Daily", "Weekly", "Monthly"] },
+        "members": { "type": "array", "description": "List of user/customer IDs" },
+        "status": { "type": "string", "enum": ["Active", "Completed"] },
+        "createdAt": { "type": "string", "description": "Timestamp" }
+      },
+      "required": ["name", "contributionAmount", "frequency", "status", "createdAt"]
+    },
+    "AdasheContribution": {
+      "title": "Adashe Contribution",
+      "description": "Individual payment to an Adashe group",
+      "type": "object",
+      "properties": {
+        "groupId": { "type": "string" },
+        "memberId": { "type": "string" },
+        "amount": { "type": "number" },
+        "staffId": { "type": "string" },
+        "createdAt": { "type": "string", "description": "Timestamp" }
+      },
+      "required": ["groupId", "memberId", "amount", "staffId", "createdAt"]
+    }
+  },
+  "firestore": {
+    "/users/{userId}": {
+      "schema": { "$ref": "User" },
+      "description": "User profiles"
+    },
+    "/products/{productId}": {
+      "schema": { "$ref": "Product" },
+      "description": "Inventory products"
+    },
+    "/transactions/{transactionId}": {
+      "schema": { "$ref": "Transaction" },
+      "description": "Sales transactions"
+    },
+    "/customers/{customerId}": {
+      "schema": { "$ref": "Customer" },
+      "description": "Customer debt tracking"
+    },
+    "/debt_payments/{paymentId}": {
+      "schema": { "$ref": "DebtPayment" },
+      "description": "Customer repayments"
+    },
+    "/adashe_groups/{groupId}": {
+      "schema": { "$ref": "AdasheGroup" },
+      "description": "Adashe saving groups"
+    },
+    "/adashe_contributions/{contributionId}": {
+      "schema": { "$ref": "AdasheContribution" },
+      "description": "Adashe payment records"
+    }
+  }
+}

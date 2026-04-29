@@ -1,0 +1,120 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+    match /{document=**} { allow read, write: if false; }
+
+    function isSignedIn() { return request.auth != null && request.auth.token.email_verified == true; }
+    function isValidId(id) { return id is string && id.size() > 0 && id.size() <= 128 && id.matches('^[a-zA-Z0-9_\\-]+$'); }
+    function incoming() { return request.resource.data; }
+    function existing() { return resource.data; }
+    
+    // Auth context and roles
+    function getRole() {
+      return exists(/databases/$(database)/documents/users/$(request.auth.uid)) ?
+        get(/databases/$(database)/documents/users/$(request.auth.uid)).data.role : "staff";
+    }
+    
+    function isAdmin() {
+      return isSignedIn() && (
+        request.auth.token.email == "dev.yusufmai@gmail.com" || // Bootstrap Admin
+        getRole() == "admin"
+      );
+    }
+    
+    function isStaff() {
+      return isSignedIn() && (isAdmin() || getRole() == "staff");
+    }
+
+    function isValidUser(data) {
+      return data.keys().hasAll(['email', 'role', 'createdAt']) &&
+             data.email is string && data.email.size() > 0 && data.email.size() <= 100 &&
+             data.role is string && (data.role == 'admin' || data.role == 'staff') &&
+             (data.name == null || (data.name is string && data.name.size() <= 100)) &&
+             data.createdAt is timestamp;
+    }
+
+    match /users/{userId} {
+      allow get: if isSignedIn() && (request.auth.uid == userId || isAdmin());
+      allow list: if isAdmin();
+      
+      // Self registration logic
+      allow create: if isSignedIn() && request.auth.uid == userId && isValidUser(incoming()) && incoming().createdAt == request.time && (
+        (request.auth.token.email == "dev.yusufmai@gmail.com" && incoming().role == 'admin') ||
+        incoming().role == 'staff' ||
+        isAdmin()
+      );
+      
+      allow update: if isAdmin() && isValidUser(incoming()) && incoming().email == existing().email && incoming().createdAt == existing().createdAt;
+    }
+
+    function isValidProduct(data) {
+      return data.keys().hasAll(['name', 'category', 'costPrice', 'sellingPrice', 'stock', 'createdAt', 'updatedAt']) &&
+             data.name is string && data.name.size() > 0 && data.name.size() <= 100 &&
+             data.category is string && data.category.size() <= 50 &&
+             data.costPrice is number && data.costPrice >= 0 &&
+             data.sellingPrice is number && data.sellingPrice >= 0 &&
+             data.stock is number && data.stock >= 0 &&
+             (data.imageUrl == null || (data.imageUrl is string && data.imageUrl.size() <= 2000000)) &&
+             data.createdAt is timestamp &&
+             data.updatedAt is timestamp;
+    }
+
+    match /products/{productId} {
+      allow get: if isStaff() && isValidId(productId);
+      allow list: if isStaff();
+      
+      allow create: if isAdmin() && isValidId(productId) && isValidProduct(incoming()) &&
+                    incoming().createdAt == request.time && incoming().updatedAt == request.time;
+                    
+      // Staff can update product ONLY to reduce stock.
+      allow update: if isValidId(productId) && isStaff() && isValidProduct(incoming()) &&
+                    incoming().updatedAt == request.time &&
+                    incoming().createdAt == existing().createdAt && (
+        isAdmin() ||
+        (
+          incoming().diff(existing()).affectedKeys().hasOnly(['stock', 'updatedAt']) &&
+          incoming().stock < existing().stock &&
+          incoming().stock >= 0
+        )
+      );
+      
+      allow delete: if isAdmin() && isValidId(productId);
+    }
+
+    function isValidTransactionItem(item) {
+       return item.keys().hasAll(['productId', 'name', 'quantity', 'sellingPrice', 'subtotal']) &&
+              item.productId is string && item.productId.size() <= 128 &&
+              item.name is string && item.name.size() <= 100 &&
+              item.quantity is number && item.quantity > 0 &&
+              item.sellingPrice is number && item.sellingPrice >= 0 &&
+              item.subtotal is number && item.subtotal >= 0;
+    }
+    
+    function areTransactionItemsValid(itemsList) {
+       return itemsList is list && itemsList.size() > 0 && itemsList.size() <= 50 &&
+              isValidTransactionItem(itemsList[0]);
+    }
+
+    function isValidTransaction(data) {
+      return data.keys().hasAll(['items', 'totalAmount', 'paymentMethod', 'staffId', 'createdAt']) &&
+             areTransactionItemsValid(data.items) &&
+             data.totalAmount is number && data.totalAmount >= 0 &&
+             data.paymentMethod is string && (data.paymentMethod == 'Cash' || data.paymentMethod == 'Transfer') &&
+             data.staffId is string && data.staffId == request.auth.uid &&
+             (data.staffName == null || (data.staffName is string && data.staffName.size() <= 100)) &&
+             data.createdAt is timestamp;
+    }
+
+    match /transactions/{transactionId} {
+      allow get: if isSignedIn() && isValidId(transactionId) && (isAdmin() || resource.data.staffId == request.auth.uid);
+      allow list: if isSignedIn() && (isAdmin() || resource.data.staffId == request.auth.uid);
+      
+      allow create: if isStaff() && isValidId(transactionId) && isValidTransaction(incoming()) &&
+                    incoming().createdAt == request.time &&
+                    // For transactions, we just verify the staff ID makes sense
+                    incoming().staffId == request.auth.uid;
+                    
+      allow update, delete: if false;
+    }
+  }
+}
